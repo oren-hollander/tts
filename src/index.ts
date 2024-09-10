@@ -1,17 +1,20 @@
 import { OpenAI } from 'openai'
-import { readFile, writeFile, rm } from 'fs/promises'
+import { readFile, rm, writeFile } from 'fs/promises'
 import { cwd } from 'process'
 import { spawn } from 'child_process'
 import { join } from 'path'
 import ms from 'ms'
 import { SpeechModel } from 'openai/src/resources/audio/speech'
 import { config } from 'dotenv-flow'
+import { glob } from 'glob'
 
 const apiKey = config<{ OPENAI_API_KEY: string }>().parsed!.OPENAI_API_KEY
 
 const client = new OpenAI({ apiKey })
 
 const maxParagraphLength = 4096
+
+const getPath = (fileName: string) => join(cwd(), 'audio', fileName)
 
 const splitParagraph = (paragraph: string): string[] => {
   const words = paragraph.split(/\s+/)
@@ -84,43 +87,60 @@ const textToSpeech = async (text: string, model: SpeechModel, paragraphNumber: n
   return fileName
 }
 
-export const mergeAudio = async (fileListPath: string, outputPath: string) => {
-  const ffmpeg = spawn('ffmpeg', [
-    '-f',
-    'concat',
-    '-safe',
-    '0',
-    '-i',
-    fileListPath,
-    '-c:a',
-    'libmp3lame',
-    '-b:a',
-    '192k',
-    outputPath,
-  ])
+export const mergeAudio = async (fileListPath: string, outputPath: string): Promise<void> => {
+  return new Promise((resolve, reject) => {
+    const ffmpeg = spawn('ffmpeg', [
+      '-f',
+      'concat',
+      '-safe',
+      '0',
+      '-i',
+      fileListPath,
+      '-c:a',
+      'libmp3lame',
+      '-b:a',
+      '192k',
+      outputPath,
+    ])
 
-  ffmpeg.stdout.on('data', (data) => {
-    console.log(`FFmpeg stdout: ${data}`)
+    ffmpeg.stdout.on('data', (data) => {
+      console.log(`FFmpeg stdout: ${data}`)
+    })
+
+    ffmpeg.stderr.on('data', (data) => {
+      const message = data.toString()
+
+      if (message.toLowerCase().includes('error')) {
+        console.error(`FFmpeg error: ${message}`)
+      } else {
+        console.log(`FFmpeg info: ${message}`)
+      }
+    })
+
+    ffmpeg.on('close', (code) => {
+      console.log(`FFmpeg process exited with code ${code}`)
+      if (code ?? 0 > 0) {
+        reject()
+      } else resolve()
+    })
   })
+}
 
-  ffmpeg.stderr.on('data', (data) => {
-    const message = data.toString()
-
-    if (message.toLowerCase().includes('error')) {
-      console.error(`FFmpeg error: ${message}`)
-    } else {
-      console.log(`FFmpeg info: ${message}`)
+const cleanup = async () => {
+  try {
+    const flacFiles = await glob(getPath('*.flac'))
+    for (const file of flacFiles) {
+      await rm(file)
     }
-  })
 
-  ffmpeg.on('close', (code) => {
-    console.log(`FFmpeg process exited with code ${code}`)
-  })
+    await rm(getPath('file-list.txt'), { force: true })
+  } catch (e) {
+    console.error(e)
+  }
 }
 
 const main = async () => {
   const model: SpeechModel = 'tts-1'
-  await rm(join(cwd(), 'audio', 'output.mp3'), { recursive: true, force: true })
   const start = performance.now()
 
   const content = await loadFile(model)
@@ -138,9 +158,12 @@ const main = async () => {
 
   const fileListPath = join(cwd(), 'audio', 'file-list.txt')
   await writeFile(fileListPath, fileNames.map((fn) => `file '${fn}'`).join('\n'))
-  await mergeAudio(fileListPath, join(cwd(), 'audio', 'output.mp3'))
+
+  const audioPath = join(cwd(), 'audio', `audio-${new Date().toISOString()}.mp3`)
+  await mergeAudio(fileListPath, audioPath)
   const end = performance.now()
   console.log(`Execution time: ${ms(end - start)}`)
+  await cleanup()
 }
 
 main().catch(console.error)
