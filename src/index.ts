@@ -143,4 +143,4 @@ const main = async () => {
   console.log(`Execution time: ${ms(end - start)}`)
 }
 
-// main().catch(console.error)
+main().catch(console.error)
